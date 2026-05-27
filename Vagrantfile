@@ -10,6 +10,12 @@ Vagrant.configure("2") do |config|
       vb.cpus = 2
       vb.memory = 3072
     end
+
+    node.vm.provision "shell", inline: <<-SHELL
+      hostnamectl set-hostname sds-control
+      grep -q "192.168.56.120 sds-control" /etc/hosts || echo "192.168.56.120 sds-control" >> /etc/hosts
+      grep -q "192.168.56.121 sds-worker" /etc/hosts || echo "192.168.56.121 sds-worker" >> /etc/hosts
+    SHELL
   end
 
   config.vm.define "sds-worker" do |node|
@@ -21,5 +27,11 @@ Vagrant.configure("2") do |config|
       vb.cpus = 2
       vb.memory = 3072
     end
+
+    node.vm.provision "shell", inline: <<-SHELL
+      hostnamectl set-hostname sds-worker
+      grep -q "192.168.56.120 sds-control" /etc/hosts || echo "192.168.56.120 sds-control" >> /etc/hosts
+      grep -q "192.168.56.121 sds-worker" /etc/hosts || echo "192.168.56.121 sds-worker" >> /etc/hosts
+    SHELL
   end
 end
