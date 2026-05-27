@@ -11,10 +11,11 @@ Vagrant.configure("2") do |config|
       vb.memory = 3072
     end
 
-    node.vm.provision "shell", inline: <<-SHELL
+    node.vm.provision "shell", privileged: true, inline: <<-SHELL
       hostnamectl set-hostname sds-control
-      grep -q "192.168.56.120 sds-control" /etc/hosts || echo "192.168.56.120 sds-control" >> /etc/hosts
-      grep -q "192.168.56.121 sds-worker" /etc/hosts || echo "192.168.56.121 sds-worker" >> /etc/hosts
+      sed -i '/[[:space:]]sds-control/d; /[[:space:]]sds-worker/d' /etc/hosts
+      echo "192.168.56.120 sds-control" >> /etc/hosts
+      echo "192.168.56.121 sds-worker" >> /etc/hosts
     SHELL
   end
 
@@ -28,10 +29,11 @@ Vagrant.configure("2") do |config|
       vb.memory = 3072
     end
 
-    node.vm.provision "shell", inline: <<-SHELL
+    node.vm.provision "shell", privileged: true, inline: <<-SHELL
       hostnamectl set-hostname sds-worker
-      grep -q "192.168.56.120 sds-control" /etc/hosts || echo "192.168.56.120 sds-control" >> /etc/hosts
-      grep -q "192.168.56.121 sds-worker" /etc/hosts || echo "192.168.56.121 sds-worker" >> /etc/hosts
+      sed -i '/[[:space:]]sds-control/d; /[[:space:]]sds-worker/d' /etc/hosts
+      echo "192.168.56.120 sds-control" >> /etc/hosts
+      echo "192.168.56.121 sds-worker" >> /etc/hosts
     SHELL
   end
 end
