@@ -1,0 +1,19 @@
+# Logs
+logs/*
+!logs/.gitkeep
+*.log
+
+# Build artifacts
+*.run
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+# Local VM/Vagrant state
+.vagrant/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
