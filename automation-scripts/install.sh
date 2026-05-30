@@ -32,7 +32,26 @@ log() {
   local message="$2"
   local timestamp
   timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-  echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+
+  if [[ -n "$LOG_FILE" ]]; then
+    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+  else
+    echo "[$timestamp] [$level] $message"
+  fi
+}
+
+on_error() {
+  local exit_code="$1"
+  local line_number="$2"
+  local command="$3"
+
+  log "ERROR" "Unexpected failure detected"
+  log "ERROR" "Exit code: ${exit_code}"
+  log "ERROR" "Line: ${line_number}"
+  log "ERROR" "Command: ${command}"
+  log "ERROR" "Log file: ${LOG_FILE}"
+  log "ERROR" "Suggestion: review the log file and rerun with --dry-run before real installation."
+  exit "$exit_code"
 }
 
 fail() {
@@ -133,6 +152,8 @@ run_install() {
 
 main() {
   init_logging
+  trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
   log "INFO" "Starting SDS Inject installer"
   parse_args "$@"
   validate_role
