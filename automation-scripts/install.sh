@@ -7,6 +7,11 @@ DRY_RUN="false"
 LOG_DIR="${SDS_LOG_DIR:-./logs}"
 LOG_FILE=""
 
+MIN_CPU="2"
+MIN_MEMORY_MB="2048"
+MIN_DISK_GB="10"
+REQUIRED_COMMANDS=("bash" "awk" "grep" "sed" "df" "free" "systemctl" "nproc" "swapon")
+
 usage() {
   cat <<USAGE
 Usage:
@@ -61,6 +66,11 @@ fail() {
   exit 1
 }
 
+warn() {
+  local message="$1"
+  log "WARN" "$message"
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -98,9 +108,23 @@ validate_role() {
   esac
 }
 
-preflight_checks() {
-  log "INFO" "Running preflight checks"
+check_required_commands() {
+  local missing=()
 
+  for cmd in "${REQUIRED_COMMANDS[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    fail "Missing required commands: ${missing[*]}"
+  fi
+
+  log "INFO" "Required commands check passed"
+}
+
+check_os() {
   if [[ -r /etc/os-release ]]; then
     . /etc/os-release
     log "INFO" "Detected OS: ${PRETTY_NAME:-unknown}"
@@ -111,6 +135,86 @@ preflight_checks() {
   if [[ "${ID:-}" != "ubuntu" && "${ID_LIKE:-}" != *"debian"* ]]; then
     fail "Unsupported OS family. Expected Ubuntu/Debian-based system."
   fi
+
+  log "INFO" "OS check passed"
+}
+
+check_cpu() {
+  local cpu_count
+  cpu_count="$(nproc)"
+
+  log "INFO" "Detected CPU cores: ${cpu_count}"
+
+  if (( cpu_count < MIN_CPU )); then
+    fail "Not enough CPU cores. Required: ${MIN_CPU}, detected: ${cpu_count}"
+  fi
+
+  log "INFO" "CPU check passed"
+}
+
+check_memory() {
+  local memory_mb
+  memory_mb="$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo)"
+
+  log "INFO" "Detected memory: ${memory_mb}MB"
+
+  if (( memory_mb < MIN_MEMORY_MB )); then
+    fail "Not enough memory. Required: ${MIN_MEMORY_MB}MB, detected: ${memory_mb}MB"
+  fi
+
+  log "INFO" "Memory check passed"
+}
+
+check_disk() {
+  local disk_available_mb
+  local min_disk_mb
+
+  disk_available_mb="$(df -Pm / | awk 'NR==2 {print $4}')"
+  min_disk_mb=$((MIN_DISK_GB * 1024))
+
+  log "INFO" "Detected available disk on /: ${disk_available_mb}MB"
+
+  if (( disk_available_mb < min_disk_mb )); then
+    fail "Not enough disk space on /. Required: ${MIN_DISK_GB}GB, detected: $((disk_available_mb / 1024))GB"
+  fi
+
+  log "INFO" "Disk check passed"
+}
+
+check_systemd() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    fail "systemctl not found. systemd is required."
+  fi
+
+  if [[ "$(ps -p 1 -o comm=)" != "systemd" ]]; then
+    fail "systemd is not PID 1. This installer must run on a systemd-based machine."
+  fi
+
+  log "INFO" "systemd check passed"
+}
+
+check_swap() {
+  if swapon --show | grep -q .; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      warn "Swap is active. Real Kubernetes installation will fail until swap is disabled."
+    else
+      fail "Swap is active. Disable swap before real Kubernetes installation."
+    fi
+  else
+    log "INFO" "Swap check passed: swap is disabled"
+  fi
+}
+
+preflight_checks() {
+  log "INFO" "Running preflight checks"
+
+  check_os
+  check_required_commands
+  check_cpu
+  check_memory
+  check_disk
+  check_systemd
+  check_swap
 
   if [[ "$DRY_RUN" == "false" && "${EUID}" -ne 0 ]]; then
     fail "Root privileges are required. Run with sudo."
