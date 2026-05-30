@@ -6,6 +6,7 @@ ROLE=""
 DRY_RUN="false"
 LOG_DIR="${SDS_LOG_DIR:-./logs}"
 LOG_FILE=""
+K8S_NODE_STATE="unknown"
 
 MIN_CPU="2"
 MIN_MEMORY_MB="2048"
@@ -205,6 +206,39 @@ check_swap() {
   fi
 }
 
+detect_kubernetes_node_state() {
+  local has_kubeadm="false"
+  local has_kubelet="false"
+  local has_kubectl="false"
+  local has_kubelet_service="false"
+
+  command -v kubeadm >/dev/null 2>&1 && has_kubeadm="true"
+  command -v kubelet >/dev/null 2>&1 && has_kubelet="true"
+  command -v kubectl >/dev/null 2>&1 && has_kubectl="true"
+
+  if systemctl list-unit-files kubelet.service --no-legend 2>/dev/null | grep -q '^kubelet.service'; then
+    has_kubelet_service="true"
+  fi
+
+  log "INFO" "Kubernetes detection: kubeadm=${has_kubeadm}, kubelet=${has_kubelet}, kubectl=${has_kubectl}, kubelet_service=${has_kubelet_service}"
+
+  if [[ -f /etc/kubernetes/admin.conf || -f /etc/kubernetes/manifests/kube-apiserver.yaml ]]; then
+    K8S_NODE_STATE="control-plane"
+  elif [[ -f /etc/kubernetes/kubelet.conf || "$has_kubelet_service" == "true" || "$has_kubelet" == "true" ]]; then
+    K8S_NODE_STATE="worker"
+  elif [[ ! -d /etc/kubernetes && "$has_kubeadm" == "false" && "$has_kubelet" == "false" && "$has_kubectl" == "false" && "$has_kubelet_service" == "false" ]]; then
+    K8S_NODE_STATE="not-installed"
+  else
+    K8S_NODE_STATE="unknown"
+  fi
+
+  log "INFO" "Detected Kubernetes node state: ${K8S_NODE_STATE}"
+
+  if [[ "$K8S_NODE_STATE" == "unknown" ]]; then
+    warn "Kubernetes state is unclear. Real installation should stop until the node is inspected."
+  fi
+}
+
 preflight_checks() {
   log "INFO" "Running preflight checks"
 
@@ -215,6 +249,7 @@ preflight_checks() {
   check_disk
   check_systemd
   check_swap
+  detect_kubernetes_node_state
 
   if [[ "$DRY_RUN" == "false" && "${EUID}" -ne 0 ]]; then
     fail "Root privileges are required. Run with sudo."
@@ -225,11 +260,13 @@ preflight_checks() {
 
 run_control_plane_flow() {
   log "INFO" "Control-plane flow selected"
+  log "INFO" "Detected Kubernetes state before action: ${K8S_NODE_STATE}"
   log "INFO" "Dry-run mode: no Kubernetes control-plane changes will be made"
 }
 
 run_worker_flow() {
   log "INFO" "Worker flow selected"
+  log "INFO" "Detected Kubernetes state before action: ${K8S_NODE_STATE}"
   log "INFO" "Dry-run mode: no Kubernetes worker changes will be made"
 }
 
