@@ -3,11 +3,11 @@ set -Eeuo pipefail
 
 TARGET=""
 SSH_PORT="22"
+IDENTITY_FILE=""
 INSTALLER_PATH="dist/sds-inject-installer.run"
 REMOTE_DIR="/tmp/sds-inject"
 REMOTE_INSTALLER="${REMOTE_DIR}/sds-inject-installer.run"
 DRY_RUN="false"
-IDENTITY_FILE=""
 
 usage() {
   cat <<USAGE
@@ -15,12 +15,12 @@ Usage:
   ./cd/deploy-installer.sh --target user@host [--port 22] [--identity-file path] [--installer dist/sds-inject-installer.run] [--dry-run]
 
 Options:
-  --target     Required. SSH target, example: ubuntu@192.168.56.120
-  --port       SSH port. Default: 22
+  --target         Required. SSH target, example: ubuntu@192.168.56.120
+  --port           SSH port. Default: 22
   --identity-file  SSH private key path
-  --installer       Path to local installer. Default: dist/sds-inject-installer.run
-  --dry-run    Run installer in dry-run mode
-  --help       Show help
+  --installer      Path to local installer. Default: dist/sds-inject-installer.run
+  --dry-run        Run installer in dry-run mode
+  --help           Show help
 USAGE
 }
 
@@ -71,8 +71,28 @@ parse_args() {
   done
 }
 
+ssh_base() {
+  local args=(-p "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes)
+
+  if [[ -n "$IDENTITY_FILE" ]]; then
+    args+=(-i "$IDENTITY_FILE")
+  fi
+
+  ssh "${args[@]}" "$@"
+}
+
+scp_base() {
+  local args=(-P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+
+  if [[ -n "$IDENTITY_FILE" ]]; then
+    args+=(-i "$IDENTITY_FILE")
+  fi
+
+  scp "${args[@]}" "$@"
+}
+
 detect_remote_kubernetes_state() {
-  ssh -p "$SSH_PORT" "$TARGET" 'bash -s' <<'REMOTE'
+  ssh_base "$TARGET" 'bash -s' <<'REMOTE'
 set -Eeuo pipefail
 
 has_kubeadm="false"
@@ -105,6 +125,10 @@ main() {
 
   [[ -n "$TARGET" ]] || fail "--target is required"
   [[ -f "$INSTALLER_PATH" ]] || fail "Installer not found: $INSTALLER_PATH"
+
+  if [[ -n "$IDENTITY_FILE" && ! -f "$IDENTITY_FILE" ]]; then
+    fail "Identity file not found: $IDENTITY_FILE"
+  fi
 
   require_command ssh
   require_command scp
