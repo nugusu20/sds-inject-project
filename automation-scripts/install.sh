@@ -344,6 +344,69 @@ enforce_installer_safety_policy() {
   esac
 }
 
+collect_offline_deb_packages() {
+  local package
+  local matches=()
+  OFFLINE_DEB_FILES=()
+
+  while IFS= read -r package; do
+    [[ -z "$package" || "$package" =~ ^[[:space:]]*# ]] && continue
+
+    matches=()
+    while IFS= read -r match; do
+      matches+=("$match")
+    done < <(find "$PACKAGE_DIR" -maxdepth 1 -type f -name "${package}*.deb" | sort)
+
+    if [[ "${#matches[@]}" -gt 0 ]]; then
+      OFFLINE_DEB_FILES+=("${matches[@]}")
+    fi
+  done < "$OFFLINE_PACKAGES_MANIFEST"
+}
+
+install_offline_deb_packages() {
+  log "INFO" "Preparing offline .deb package installation"
+
+  collect_offline_deb_packages
+
+  if [[ "${#OFFLINE_DEB_FILES[@]}" -eq 0 ]]; then
+    fail "No offline .deb packages found in ${PACKAGE_DIR}"
+  fi
+
+  log "INFO" "Offline .deb packages selected: ${#OFFLINE_DEB_FILES[@]}"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "INFO" "Dry-run mode: dpkg -i will not be executed"
+    return 0
+  fi
+
+  log "INFO" "Installing offline .deb packages with dpkg"
+  dpkg -i "${OFFLINE_DEB_FILES[@]}" || fail "dpkg installation failed. Add all missing dependency .deb files to binaries/packages."
+
+  log "INFO" "Offline .deb package installation completed"
+}
+
+verify_kubernetes_binaries() {
+  local missing=()
+  local cmd
+
+  for cmd in kubeadm kubelet kubectl containerd; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      warn "Kubernetes/runtime commands are not installed yet: ${missing[*]}"
+      return 0
+    fi
+
+    fail "Required Kubernetes/runtime commands missing after package installation: ${missing[*]}"
+  fi
+
+  log "INFO" "Kubernetes/runtime binary verification passed"
+}
+
 preflight_checks() {
   log "INFO" "Running preflight checks"
 
@@ -380,8 +443,11 @@ run_worker_flow() {
 run_install() {
   if [[ "$DRY_RUN" == "true" ]]; then
     log "INFO" "Running in dry-run mode"
+    verify_kubernetes_binaries
   else
-    fail "Real installation is not enabled in this base script yet"
+    log "INFO" "Running in real installation mode"
+    install_offline_deb_packages
+    verify_kubernetes_binaries
   fi
 
   case "$ROLE" in
