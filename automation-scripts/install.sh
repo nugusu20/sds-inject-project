@@ -239,6 +239,47 @@ detect_kubernetes_node_state() {
   fi
 }
 
+enforce_installer_safety_policy() {
+  log "INFO" "Evaluating installer safety policy: role=${ROLE}, node_state=${K8S_NODE_STATE}, dry_run=${DRY_RUN}"
+
+  case "$K8S_NODE_STATE" in
+    not-installed)
+      if [[ "$ROLE" == "worker" ]]; then
+        warn "Kubernetes is not installed. Worker install requires join configuration. CD should install control-plane only on an empty node."
+      elif [[ "$ROLE" == "both" ]]; then
+        warn "Role both was explicitly selected on a clean node."
+      fi
+      log "INFO" "Safety policy passed for clean node"
+      ;;
+    worker)
+      if [[ "$ROLE" == "worker" ]]; then
+        log "INFO" "Existing worker node detected. Worker reinstall/upgrade path is allowed."
+      elif [[ "$DRY_RUN" == "true" ]]; then
+        warn "Existing worker node detected. Real installation would refuse role: ${ROLE}"
+      else
+        fail "Existing worker node detected. Refusing role '${ROLE}'. Only worker reinstall/upgrade is allowed."
+      fi
+      ;;
+    control-plane)
+      if [[ "$DRY_RUN" == "true" ]]; then
+        warn "Existing control-plane detected. Real installation would be refused."
+      else
+        fail "Existing control-plane detected. Refusing automatic reinstall/upgrade on control-plane."
+      fi
+      ;;
+    unknown)
+      if [[ "$DRY_RUN" == "true" ]]; then
+        warn "Kubernetes node state is unknown. Real installation would be refused."
+      else
+        fail "Kubernetes node state is unknown. Refusing real installation."
+      fi
+      ;;
+    *)
+      fail "Invalid internal Kubernetes node state: ${K8S_NODE_STATE}"
+      ;;
+  esac
+}
+
 preflight_checks() {
   log "INFO" "Running preflight checks"
 
@@ -250,6 +291,7 @@ preflight_checks() {
   check_systemd
   check_swap
   detect_kubernetes_node_state
+  enforce_installer_safety_policy
 
   if [[ "$DRY_RUN" == "false" && "${EUID}" -ne 0 ]]; then
     fail "Root privileges are required. Run with sudo."
