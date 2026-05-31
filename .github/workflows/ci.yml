@@ -1,0 +1,72 @@
+name: SDS Inject CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  validate-package:
+    name: Validate and package installer
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y makeself
+
+      - name: Validate shell syntax
+        run: |
+          bash -n build-script
+          bash -n automation-scripts/install.sh
+
+      - name: Validate installer dry-run flows
+        run: |
+          ./automation-scripts/install.sh --role control-plane --dry-run
+          ./automation-scripts/install.sh --role worker --dry-run
+          ./automation-scripts/install.sh --role both --dry-run
+
+      - name: Validate expected error handling
+        run: |
+          set +e
+          ./automation-scripts/install.sh --dry-run
+          missing_role_exit=$?
+
+          ./automation-scripts/install.sh --role bad --dry-run
+          bad_role_exit=$?
+
+          set -e
+
+          test "$missing_role_exit" -eq 1
+          test "$bad_role_exit" -eq 1
+
+      - name: Build single-file installer
+        run: |
+          ./build-script
+          test -x dist/sds-inject-installer.run
+
+      - name: Validate packaged installer
+        run: |
+          ./dist/sds-inject-installer.run -- --help
+          SDS_LOG_DIR="$PWD/logs" ./dist/sds-inject-installer.run -- --role control-plane --dry-run
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sds-inject-installer
+          path: dist/sds-inject-installer.run
+          if-no-files-found: error
+
+      - name: Failure notification
+        if: failure()
+        run: |
+          echo "::error::SDS Inject CI failed. Check workflow logs for validation or packaging errors."
