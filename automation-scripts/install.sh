@@ -6,6 +6,10 @@ ROLE=""
 DRY_RUN="false"
 LOG_DIR=""
 LOG_FILE=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PAYLOAD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PACKAGE_DIR="${SDS_PACKAGE_DIR:-${PAYLOAD_ROOT}/binaries/packages}"
+OFFLINE_PACKAGES_MANIFEST="${SDS_OFFLINE_PACKAGES_MANIFEST:-${PAYLOAD_ROOT}/configs/offline-packages.txt}"
 K8S_NODE_STATE="unknown"
 
 MIN_CPU="2"
@@ -217,6 +221,55 @@ check_swap() {
   fi
 }
 
+check_offline_packages() {
+  log "INFO" "Checking offline packages manifest: ${OFFLINE_PACKAGES_MANIFEST}"
+  log "INFO" "Checking offline packages directory: ${PACKAGE_DIR}"
+
+  if [[ ! -f "$OFFLINE_PACKAGES_MANIFEST" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      warn "Offline packages manifest not found: ${OFFLINE_PACKAGES_MANIFEST}"
+      return 0
+    fi
+    fail "Offline packages manifest not found: ${OFFLINE_PACKAGES_MANIFEST}"
+  fi
+
+  if [[ ! -d "$PACKAGE_DIR" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      warn "Offline packages directory not found: ${PACKAGE_DIR}"
+      return 0
+    fi
+    fail "Offline packages directory not found: ${PACKAGE_DIR}"
+  fi
+
+  local missing=()
+  local package
+  local found
+
+  while IFS= read -r package; do
+    [[ -z "$package" || "$package" =~ ^[[:space:]]*# ]] && continue
+
+    found="false"
+
+    if compgen -G "${PACKAGE_DIR}/${package}"'*.deb' >/dev/null; then
+      found="true"
+    fi
+
+    if [[ "$found" == "false" ]]; then
+      missing+=("$package")
+    fi
+  done < "$OFFLINE_PACKAGES_MANIFEST"
+
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      warn "Missing offline .deb packages: ${missing[*]}"
+      return 0
+    fi
+    fail "Missing offline .deb packages: ${missing[*]}"
+  fi
+
+  log "INFO" "Offline packages check passed"
+}
+
 detect_kubernetes_node_state() {
   local has_kubeadm="false"
   local has_kubelet="false"
@@ -296,6 +349,7 @@ preflight_checks() {
 
   check_os
   check_required_commands
+  check_offline_packages
   check_cpu
   check_memory
   check_disk

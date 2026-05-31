@@ -1,0 +1,12 @@
+# Required offline .deb package names/prefixes for SDS Inject
+# Files should be placed under binaries/packages/
+
+kubeadm
+kubelet
+kubectl
+containerd
+runc
+cri-tools
+conntrack
+socat
+iptables
