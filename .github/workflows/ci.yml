@@ -28,7 +28,12 @@ jobs:
         run: |
           bash -n build-script
           bash -n automation-scripts/install.sh
+          bash -n automation-scripts/collect-packages.sh
           bash -n cd/deploy-installer.sh
+
+      - name: Validate package collection script help
+        run: |
+          ./automation-scripts/collect-packages.sh --help
 
       - name: Validate CD script help
         run: |
