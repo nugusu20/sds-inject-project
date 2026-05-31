@@ -289,9 +289,9 @@ detect_kubernetes_node_state() {
 
   if [[ -f /etc/kubernetes/admin.conf || -f /etc/kubernetes/manifests/kube-apiserver.yaml ]]; then
     K8S_NODE_STATE="control-plane"
-  elif [[ -f /etc/kubernetes/kubelet.conf || "$has_kubelet_service" == "true" || "$has_kubelet" == "true" ]]; then
+  elif [[ -f /etc/kubernetes/kubelet.conf ]]; then
     K8S_NODE_STATE="worker"
-  elif [[ ! -d /etc/kubernetes && "$has_kubeadm" == "false" && "$has_kubelet" == "false" && "$has_kubectl" == "false" && "$has_kubelet_service" == "false" ]]; then
+  elif [[ ! -f /etc/kubernetes/admin.conf && ! -f /etc/kubernetes/kubelet.conf && ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]]; then
     K8S_NODE_STATE="not-installed"
   else
     K8S_NODE_STATE="unknown"

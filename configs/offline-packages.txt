@@ -10,3 +10,5 @@ cri-tools
 conntrack
 socat
 iptables
+
+kubernetes-cni
