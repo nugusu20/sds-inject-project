@@ -1,0 +1,70 @@
+name: SDS Inject CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run installer in dry-run mode"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  deploy-installer:
+    name: Deploy installer to remote machine
+    runs-on: ubuntu-22.04
+
+    env:
+      CD_TARGET_HOST: ${{ secrets.CD_TARGET_HOST }}
+      CD_TARGET_USER: ${{ secrets.CD_TARGET_USER }}
+      CD_SSH_PRIVATE_KEY: ${{ secrets.CD_SSH_PRIVATE_KEY }}
+      CD_SSH_PORT: ${{ secrets.CD_SSH_PORT }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          test -n "$CD_TARGET_HOST"
+          test -n "$CD_TARGET_USER"
+          test -n "$CD_SSH_PRIVATE_KEY"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y makeself
+
+      - name: Build installer
+        run: |
+          ./build-script
+          test -x dist/sds-inject-installer.run
+
+      - name: Prepare SSH key
+        run: |
+          printf '%s\n' "$CD_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/sds_cd_key"
+          chmod 600 "$RUNNER_TEMP/sds_cd_key"
+
+      - name: Deploy installer
+        run: |
+          PORT="${CD_SSH_PORT:-22}"
+          DRY_RUN_FLAG=""
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          ./cd/deploy-installer.sh \
+            --target "${CD_TARGET_USER}@${CD_TARGET_HOST}" \
+            --port "$PORT" \
+            --identity-file "$RUNNER_TEMP/sds_cd_key" \
+            --installer dist/sds-inject-installer.run \
+            $DRY_RUN_FLAG
+
+      - name: Failure notification
+        if: failure()
+        run: |
+          echo "::error::SDS Inject CD failed. Check SSH access, secrets, installer build, or remote node state."
