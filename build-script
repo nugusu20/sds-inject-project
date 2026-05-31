@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_NAME="sds-inject"
+VERSION="${SDS_VERSION:-0.1.0}"
+INSTALLER_NAME="sds-inject-installer.run"
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUILD_ROOT="${ROOT_DIR}/.build"
+PAYLOAD_DIR="${BUILD_ROOT}/${PROJECT_NAME}-${VERSION}-$(date +%Y%m%d-%H%M%S)"
+DIST_DIR="${ROOT_DIR}/dist"
+OUTPUT_FILE="${DIST_DIR}/${INSTALLER_NAME}"
+
+require_command() {
+  local cmd="$1"
+
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "ERROR: missing required command: ${cmd}" >&2
+    exit 1
+  fi
+}
+
+require_command makeself
+require_command cp
+require_command mkdir
+require_command chmod
+require_command date
+
+mkdir -p "$PAYLOAD_DIR"
+mkdir -p "$DIST_DIR"
+
+cp -a "${ROOT_DIR}/automation-scripts" "$PAYLOAD_DIR/"
+cp -a "${ROOT_DIR}/binaries" "$PAYLOAD_DIR/"
+cp -a "${ROOT_DIR}/configs" "$PAYLOAD_DIR/"
+
+cat > "${PAYLOAD_DIR}/entrypoint.sh" <<'ENTRYPOINT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "${SCRIPT_DIR}/automation-scripts/install.sh" "$@"
+ENTRYPOINT
+
+chmod +x "${PAYLOAD_DIR}/entrypoint.sh"
+chmod +x "${PAYLOAD_DIR}/automation-scripts/install.sh"
+
+cat > "${PAYLOAD_DIR}/VERSION" <<VERSION_FILE
+PROJECT_NAME=${PROJECT_NAME}
+VERSION=${VERSION}
+BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+VERSION_FILE
+
+cat > "${PAYLOAD_DIR}/MANIFEST.txt" <<MANIFEST
+SDS Inject offline-style installer payload
+
+Included directories:
+- automation-scripts
+- binaries
+- configs
+
+Entrypoint:
+- entrypoint.sh
+
+Version:
+- ${VERSION}
+MANIFEST
+
+makeself \
+  --quiet \
+  "$PAYLOAD_DIR" \
+  "$OUTPUT_FILE" \
+  "SDS Inject Installer ${VERSION}" \
+  ./entrypoint.sh
+
+chmod +x "$OUTPUT_FILE"
+
+echo "Built installer: ${OUTPUT_FILE}"

@@ -4,7 +4,7 @@ set -Eeuo pipefail
 SCRIPT_NAME="$(basename "$0")"
 ROLE=""
 DRY_RUN="false"
-LOG_DIR="${SDS_LOG_DIR:-./logs}"
+LOG_DIR=""
 LOG_FILE=""
 K8S_NODE_STATE="unknown"
 
@@ -27,7 +27,18 @@ Options:
 USAGE
 }
 
+resolve_log_dir() {
+  if [[ -n "${SDS_LOG_DIR:-}" ]]; then
+    LOG_DIR="$SDS_LOG_DIR"
+  elif [[ "${EUID}" -eq 0 ]]; then
+    LOG_DIR="/var/log/sds-inject"
+  else
+    LOG_DIR="./logs"
+  fi
+}
+
 init_logging() {
+  resolve_log_dir
   mkdir -p "$LOG_DIR"
   LOG_FILE="${LOG_DIR}/sds-inject-$(date +%Y%m%d-%H%M%S).log"
   touch "$LOG_FILE"

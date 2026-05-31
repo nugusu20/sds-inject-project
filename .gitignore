@@ -17,3 +17,10 @@ logs/*
 .DS_Store
 Thumbs.db
 *.swp
+
+# Build workspace
+.build/
+
+# Distribution artifacts
+dist/*
+!dist/.gitkeep
