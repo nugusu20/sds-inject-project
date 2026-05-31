@@ -9,13 +9,14 @@ LOG_FILE=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PAYLOAD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PACKAGE_DIR="${SDS_PACKAGE_DIR:-${PAYLOAD_ROOT}/binaries/packages}"
+TOOLS_DIR="${SDS_TOOLS_DIR:-${PAYLOAD_ROOT}/binaries/tools}"
 OFFLINE_PACKAGES_MANIFEST="${SDS_OFFLINE_PACKAGES_MANIFEST:-${PAYLOAD_ROOT}/configs/offline-packages.txt}"
 K8S_NODE_STATE="unknown"
 
 MIN_CPU="2"
 MIN_MEMORY_MB="2048"
 MIN_DISK_GB="10"
-REQUIRED_COMMANDS=("bash" "awk" "grep" "sed" "df" "free" "systemctl" "nproc" "swapon")
+REQUIRED_COMMANDS=("bash" "awk" "grep" "sed" "df" "free" "systemctl" "nproc" "swapon" "find" "install")
 
 usage() {
   cat <<USAGE
@@ -344,6 +345,45 @@ enforce_installer_safety_policy() {
   esac
 }
 
+check_offline_tools() {
+  log "INFO" "Checking offline tools directory: ${TOOLS_DIR}"
+
+  local missing=()
+
+  for tool in helm kustomize; do
+    if [[ ! -x "${TOOLS_DIR}/${tool}" ]]; then
+      missing+=("$tool")
+    fi
+  done
+
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      warn "Missing offline tools: ${missing[*]}"
+      return 0
+    fi
+
+    fail "Missing offline tools: ${missing[*]}"
+  fi
+
+  log "INFO" "Offline tools check passed"
+}
+
+install_offline_tools() {
+  log "INFO" "Preparing offline tools installation"
+
+  check_offline_tools
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "INFO" "Dry-run mode: offline tools will not be installed"
+    return 0
+  fi
+
+  install -m 0755 "${TOOLS_DIR}/helm" /usr/local/bin/helm
+  install -m 0755 "${TOOLS_DIR}/kustomize" /usr/local/bin/kustomize
+
+  log "INFO" "Offline tools installed to /usr/local/bin"
+}
+
 collect_offline_deb_packages() {
   local package
   local matches=()
@@ -413,6 +453,7 @@ preflight_checks() {
   check_os
   check_required_commands
   check_offline_packages
+  check_offline_tools
   check_cpu
   check_memory
   check_disk
@@ -447,6 +488,7 @@ run_install() {
   else
     log "INFO" "Running in real installation mode"
     install_offline_deb_packages
+    install_offline_tools
     verify_kubernetes_binaries
   fi
 
