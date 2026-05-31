@@ -2,174 +2,206 @@
 set -Eeuo pipefail
 
 TARGET=""
-SSH_PORT="22"
+PORT="22"
 IDENTITY_FILE=""
-INSTALLER_PATH="dist/sds-inject-installer.run"
-REMOTE_DIR="/tmp/sds-inject"
-REMOTE_INSTALLER="${REMOTE_DIR}/sds-inject-installer.run"
+INSTALLER="dist/sds-inject-installer.run"
 DRY_RUN="false"
+APISERVER_ADVERTISE_ADDRESS="${SDS_APISERVER_ADVERTISE_ADDRESS:-}"
+POD_CIDR="${SDS_POD_CIDR:-10.244.0.0/16}"
+REMOTE_DIR="${SDS_REMOTE_DIR:-/tmp/sds-inject}"
+REMOTE_INSTALLER="${REMOTE_DIR}/sds-inject-installer.run"
 
 usage() {
   cat <<USAGE
 Usage:
-  ./cd/deploy-installer.sh --target user@host [--port 22] [--identity-file path] [--installer dist/sds-inject-installer.run] [--dry-run]
+  $0 --target user@host [options]
 
 Options:
-  --target         Required. SSH target, example: ubuntu@192.168.56.120
-  --port           SSH port. Default: 22
-  --identity-file  SSH private key path
-  --installer      Path to local installer. Default: dist/sds-inject-installer.run
-  --dry-run        Run installer in dry-run mode
-  --help           Show help
+  --target user@host
+  --port PORT
+  --identity-file PATH
+  --installer PATH
+  --apiserver-advertise-address IP
+  --pod-cidr CIDR
+  --dry-run
+  -h, --help
 USAGE
 }
 
+log() {
+  printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2"
+}
+
 fail() {
-  echo "ERROR: $1" >&2
+  log "ERROR" "$1"
   exit 1
 }
 
-require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+on_error() {
+  local exit_code=$?
+  log "ERROR" "CD deployment failed at line ${BASH_LINENO[0]} with exit code ${exit_code}"
+  exit "$exit_code"
 }
 
-parse_args() {
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --target)
-        [[ $# -ge 2 ]] || fail "Missing value for --target"
-        TARGET="$2"
-        shift 2
-        ;;
-      --port)
-        [[ $# -ge 2 ]] || fail "Missing value for --port"
-        SSH_PORT="$2"
-        shift 2
-        ;;
-      --identity-file)
-        [[ $# -ge 2 ]] || fail "Missing value for --identity-file"
-        IDENTITY_FILE="$2"
-        shift 2
-        ;;
-      --installer)
-        [[ $# -ge 2 ]] || fail "Missing value for --installer"
-        INSTALLER_PATH="$2"
-        shift 2
-        ;;
-      --dry-run)
-        DRY_RUN="true"
-        shift
-        ;;
-      --help|-h)
-        usage
-        exit 0
-        ;;
-      *)
-        fail "Unknown argument: $1"
-        ;;
-    esac
-  done
+trap on_error ERR
+
+shell_quote() {
+  printf "%q" "$1"
 }
 
-ssh_base() {
-  local args=(-p "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes)
+extract_host_from_target() {
+  local value="${TARGET#*@}"
+  value="${value%%:*}"
+  printf '%s' "$value"
+}
 
-  if [[ -n "$IDENTITY_FILE" ]]; then
-    args+=(-i "$IDENTITY_FILE")
+is_ipv4() {
+  [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target)
+      TARGET="${2:-}"
+      shift 2
+      ;;
+    --port)
+      PORT="${2:-}"
+      shift 2
+      ;;
+    --identity-file)
+      IDENTITY_FILE="${2:-}"
+      shift 2
+      ;;
+    --installer)
+      INSTALLER="${2:-}"
+      shift 2
+      ;;
+    --apiserver-advertise-address)
+      APISERVER_ADVERTISE_ADDRESS="${2:-}"
+      shift 2
+      ;;
+    --pod-cidr)
+      POD_CIDR="${2:-}"
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN="true"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      fail "Unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n "$TARGET" ]] || fail "--target is required"
+[[ -f "$INSTALLER" ]] || fail "Installer not found: $INSTALLER"
+
+command -v ssh >/dev/null 2>&1 || fail "ssh is required"
+command -v scp >/dev/null 2>&1 || fail "scp is required"
+
+if [[ -n "$IDENTITY_FILE" && ! -f "$IDENTITY_FILE" ]]; then
+  fail "Identity file not found: $IDENTITY_FILE"
+fi
+
+if [[ -z "$APISERVER_ADVERTISE_ADDRESS" ]]; then
+  TARGET_HOST="$(extract_host_from_target)"
+  if is_ipv4 "$TARGET_HOST"; then
+    APISERVER_ADVERTISE_ADDRESS="$TARGET_HOST"
   fi
+fi
 
-  ssh "${args[@]}" "$@"
-}
+SSH_OPTS=(
+  -p "$PORT"
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o BatchMode=yes
+)
 
-scp_base() {
-  local args=(-P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+SCP_OPTS=(
+  -P "$PORT"
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o BatchMode=yes
+)
 
-  if [[ -n "$IDENTITY_FILE" ]]; then
-    args+=(-i "$IDENTITY_FILE")
-  fi
+if [[ -n "$IDENTITY_FILE" ]]; then
+  SSH_OPTS+=(-i "$IDENTITY_FILE")
+  SCP_OPTS+=(-i "$IDENTITY_FILE")
+fi
 
-  scp "${args[@]}" "$@"
+run_ssh() {
+  local command="$1"
+  ssh "${SSH_OPTS[@]}" "$TARGET" "bash -lc $(shell_quote "$command")"
 }
 
 detect_remote_kubernetes_state() {
-  ssh_base "$TARGET" 'bash -s' <<'REMOTE'
-set -Eeuo pipefail
-
-has_kubeadm="false"
-has_kubelet="false"
-has_kubectl="false"
-has_kubelet_service="false"
-
-command -v kubeadm >/dev/null 2>&1 && has_kubeadm="true"
-command -v kubelet >/dev/null 2>&1 && has_kubelet="true"
-command -v kubectl >/dev/null 2>&1 && has_kubectl="true"
-
-if systemctl list-unit-files kubelet.service --no-legend 2>/dev/null | grep -q "^kubelet.service"; then
-  has_kubelet_service="true"
-fi
-
+  run_ssh '
 if [[ -f /etc/kubernetes/admin.conf || -f /etc/kubernetes/manifests/kube-apiserver.yaml ]]; then
-  echo "control-plane"
-elif [[ -f /etc/kubernetes/kubelet.conf || "$has_kubelet_service" == "true" || "$has_kubelet" == "true" ]]; then
-  echo "worker"
-elif [[ ! -d /etc/kubernetes && "$has_kubeadm" == "false" && "$has_kubelet" == "false" && "$has_kubectl" == "false" && "$has_kubelet_service" == "false" ]]; then
-  echo "not-installed"
+  echo control-plane
+elif [[ -f /etc/kubernetes/kubelet.conf ]]; then
+  echo worker
+elif [[ -d /etc/kubernetes && -n "$(find /etc/kubernetes -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null)" ]]; then
+  echo unknown
 else
-  echo "unknown"
+  echo not-installed
 fi
-REMOTE
+'
 }
 
-main() {
-  parse_args "$@"
+log "INFO" "Starting SDS Inject CD deployment"
+log "INFO" "Target: ${TARGET}"
 
-  [[ -n "$TARGET" ]] || fail "--target is required"
-  [[ -f "$INSTALLER_PATH" ]] || fail "Installer not found: $INSTALLER_PATH"
+REMOTE_STATE="$(detect_remote_kubernetes_state)"
+log "INFO" "Detected remote Kubernetes state: ${REMOTE_STATE}"
 
-  if [[ -n "$IDENTITY_FILE" && ! -f "$IDENTITY_FILE" ]]; then
-    fail "Identity file not found: $IDENTITY_FILE"
-  fi
+INSTALL_ROLE=""
 
-  require_command ssh
-  require_command scp
+case "$REMOTE_STATE" in
+  not-installed)
+    INSTALL_ROLE="control-plane"
+    [[ -n "$APISERVER_ADVERTISE_ADDRESS" ]] || fail "Control-plane install requires --apiserver-advertise-address"
+    log "INFO" "Kubernetes is not installed. CD will install control-plane only."
+    log "INFO" "API server advertise address: ${APISERVER_ADVERTISE_ADDRESS}"
+    log "INFO" "Pod CIDR: ${POD_CIDR}"
+    ;;
+  worker)
+    INSTALL_ROLE="worker"
+    log "INFO" "Worker node detected. CD will reinstall or upgrade worker role only."
+    ;;
+  control-plane)
+    fail "Control-plane already exists. CD refuses to reinstall control-plane automatically."
+    ;;
+  *)
+    fail "Unknown Kubernetes state. CD refuses to continue."
+    ;;
+esac
 
-  echo "Connecting to target: ${TARGET}"
-  node_state="$(detect_remote_kubernetes_state)"
-  echo "Detected remote Kubernetes state: ${node_state}"
+if [[ "$DRY_RUN" == "true" ]]; then
+  log "INFO" "Dry-run mode: no files will be copied and no installer will run"
+  log "INFO" "Planned installer role: ${INSTALL_ROLE}"
+  log "INFO" "CD deployment finished successfully"
+  exit 0
+fi
 
-  case "$node_state" in
-    not-installed)
-      role="control-plane"
-      echo "Kubernetes is not installed. CD will install control-plane only."
-      ;;
-    worker)
-      role="worker"
-      echo "Worker node detected. CD allows worker reinstall/upgrade."
-      ;;
-    control-plane)
-      fail "Control-plane detected. CD refuses automatic reinstall/upgrade."
-      ;;
-    unknown)
-      fail "Unknown Kubernetes state. CD refuses deployment."
-      ;;
-    *)
-      fail "Invalid node state: ${node_state}"
-      ;;
-  esac
+log "INFO" "Creating remote directory: ${REMOTE_DIR}"
+run_ssh "mkdir -p $(shell_quote "$REMOTE_DIR")"
 
-  ssh_base "$TARGET" "mkdir -p '$REMOTE_DIR'"
-  scp_base "$INSTALLER_PATH" "${TARGET}:${REMOTE_INSTALLER}"
-  ssh_base "$TARGET" "chmod +x '$REMOTE_INSTALLER'"
+log "INFO" "Copying installer to remote target"
+scp "${SCP_OPTS[@]}" "$INSTALLER" "${TARGET}:${REMOTE_INSTALLER}"
 
-  installer_args=(--role "$role")
-  if [[ "$DRY_RUN" == "true" ]]; then
-    installer_args+=(--dry-run)
-  fi
+log "INFO" "Making remote installer executable"
+run_ssh "chmod +x $(shell_quote "$REMOTE_INSTALLER")"
 
-  echo "Running remote installer with role: ${role}"
-  ssh_base "$TARGET" "sudo '$REMOTE_INSTALLER' -- ${installer_args[*]}"
+if [[ "$INSTALL_ROLE" == "control-plane" ]]; then
+  run_ssh "sudo env SDS_APISERVER_ADVERTISE_ADDRESS=$(shell_quote "$APISERVER_ADVERTISE_ADDRESS") SDS_POD_CIDR=$(shell_quote "$POD_CIDR") $(shell_quote "$REMOTE_INSTALLER") -- --role control-plane"
+else
+  run_ssh "sudo $(shell_quote "$REMOTE_INSTALLER") -- --role worker"
+fi
 
-  echo "CD deployment finished successfully"
-}
-
-main "$@"
+log "INFO" "CD deployment finished successfully"

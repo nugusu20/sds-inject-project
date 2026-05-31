@@ -1,37 +1,45 @@
-name: SDS Inject CD
+name: CD
 
 on:
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "Run installer in dry-run mode"
-        required: true
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
+      target_host:
+        description: "Target host or IP"
+        required: false
+        type: string
+      target_user:
+        description: "SSH user"
+        required: false
+        type: string
+      ssh_port:
+        description: "SSH port"
+        required: false
+        default: "22"
+        type: string
+      apiserver_advertise_address:
+        description: "Kubernetes API server advertise address"
+        required: false
+        type: string
+      pod_cidr:
+        description: "Kubernetes pod CIDR"
+        required: false
+        default: "10.244.0.0/16"
+        type: string
 
 jobs:
-  deploy-installer:
-    name: Deploy installer to remote machine
-    runs-on: ubuntu-22.04
+  deploy:
+    runs-on: ubuntu-latest
 
     env:
-      CD_TARGET_HOST: ${{ secrets.CD_TARGET_HOST }}
-      CD_TARGET_USER: ${{ secrets.CD_TARGET_USER }}
-      CD_SSH_PRIVATE_KEY: ${{ secrets.CD_SSH_PRIVATE_KEY }}
-      CD_SSH_PORT: ${{ secrets.CD_SSH_PORT }}
+      TARGET_HOST: ${{ github.event.inputs.target_host || secrets.CD_TARGET_HOST }}
+      TARGET_USER: ${{ github.event.inputs.target_user || secrets.CD_TARGET_USER }}
+      TARGET_PORT: ${{ github.event.inputs.ssh_port || secrets.CD_SSH_PORT || '22' }}
+      APISERVER_ADVERTISE_ADDRESS: ${{ github.event.inputs.apiserver_advertise_address || secrets.CD_APISERVER_ADVERTISE_ADDRESS }}
+      POD_CIDR: ${{ github.event.inputs.pod_cidr || secrets.CD_POD_CIDR || '10.244.0.0/16' }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Validate required secrets
-        run: |
-          test -n "$CD_TARGET_HOST"
-          test -n "$CD_TARGET_USER"
-          test -n "$CD_SSH_PRIVATE_KEY"
 
       - name: Install build dependencies
         run: |
@@ -39,32 +47,33 @@ jobs:
           sudo apt-get install -y makeself
 
       - name: Build installer
-        run: |
-          ./build-script
-          test -x dist/sds-inject-installer.run
+        run: ./build-script
 
-      - name: Prepare SSH key
+      - name: Configure SSH key
         run: |
-          printf '%s\n' "$CD_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/sds_cd_key"
-          chmod 600 "$RUNNER_TEMP/sds_cd_key"
+          test -n "${{ secrets.CD_SSH_PRIVATE_KEY }}"
+          mkdir -p ~/.ssh
+          printf '%s
+' "${{ secrets.CD_SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/sds_cd_key
+          chmod 600 ~/.ssh/sds_cd_key
 
       - name: Deploy installer
         run: |
-          PORT="${CD_SSH_PORT:-22}"
-          DRY_RUN_FLAG=""
+          set -euo pipefail
 
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
+          : "${TARGET_HOST:?CD target host is required}"
+          : "${TARGET_USER:?CD target user is required}"
+
+          args=(
+            --target "${TARGET_USER}@${TARGET_HOST}"
+            --port "${TARGET_PORT}"
+            --identity-file "$HOME/.ssh/sds_cd_key"
+            --installer "dist/sds-inject-installer.run"
+            --pod-cidr "${POD_CIDR}"
+          )
+
+          if [[ -n "${APISERVER_ADVERTISE_ADDRESS:-}" ]]; then
+            args+=(--apiserver-advertise-address "${APISERVER_ADVERTISE_ADDRESS}")
           fi
 
-          ./cd/deploy-installer.sh \
-            --target "${CD_TARGET_USER}@${CD_TARGET_HOST}" \
-            --port "$PORT" \
-            --identity-file "$RUNNER_TEMP/sds_cd_key" \
-            --installer dist/sds-inject-installer.run \
-            $DRY_RUN_FLAG
-
-      - name: Failure notification
-        if: failure()
-        run: |
-          echo "::error::SDS Inject CD failed. Check SSH access, secrets, installer build, or remote node state."
+          ./cd/deploy-installer.sh "${args[@]}"

@@ -11,6 +11,8 @@ PAYLOAD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PACKAGE_DIR="${SDS_PACKAGE_DIR:-${PAYLOAD_ROOT}/binaries/packages}"
 TOOLS_DIR="${SDS_TOOLS_DIR:-${PAYLOAD_ROOT}/binaries/tools}"
 OFFLINE_PACKAGES_MANIFEST="${SDS_OFFLINE_PACKAGES_MANIFEST:-${PAYLOAD_ROOT}/configs/offline-packages.txt}"
+KUBEADM_POD_CIDR="${SDS_POD_CIDR:-10.244.0.0/16}"
+APISERVER_ADVERTISE_ADDRESS="${SDS_APISERVER_ADVERTISE_ADDRESS:-}"
 K8S_NODE_STATE="unknown"
 
 MIN_CPU="2"
@@ -469,10 +471,103 @@ preflight_checks() {
   log "INFO" "Preflight checks passed"
 }
 
+configure_kernel_for_kubernetes() {
+  log "INFO" "Configuring kernel modules and sysctl for Kubernetes"
+
+  command -v modprobe >/dev/null 2>&1 || fail "modprobe is required for Kubernetes kernel module configuration"
+  command -v sysctl >/dev/null 2>&1 || fail "sysctl is required for Kubernetes network configuration"
+
+  modprobe overlay
+  modprobe br_netfilter
+
+  cat > /etc/modules-load.d/sds-kubernetes.conf <<'MODULES'
+overlay
+br_netfilter
+MODULES
+
+  cat > /etc/sysctl.d/sds-kubernetes.conf <<'SYSCTL'
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward = 1
+SYSCTL
+
+  sysctl --system >/dev/null
+
+  log "INFO" "Kernel and sysctl configuration completed"
+}
+
+configure_containerd_for_kubernetes() {
+  log "INFO" "Configuring containerd for Kubernetes"
+
+  mkdir -p /etc/containerd
+
+  if [[ ! -f /etc/containerd/config.toml ]]; then
+    containerd config default > /etc/containerd/config.toml
+  fi
+
+  if grep -q "SystemdCgroup = false" /etc/containerd/config.toml; then
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+  elif ! grep -q "SystemdCgroup = true" /etc/containerd/config.toml; then
+    warn "Could not find SystemdCgroup setting in containerd config. kubeadm may require manual validation."
+  fi
+
+  systemctl enable containerd >/dev/null
+  systemctl restart containerd
+
+  log "INFO" "containerd configuration completed"
+}
+
+write_kubeconfig_for_root() {
+  log "INFO" "Writing kubeconfig for root"
+
+  mkdir -p /root/.kube
+  cp -f /etc/kubernetes/admin.conf /root/.kube/config
+  chown root:root /root/.kube/config
+
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    local sudo_home
+    sudo_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+
+    if [[ -n "$sudo_home" && -d "$sudo_home" ]]; then
+      mkdir -p "${sudo_home}/.kube"
+      cp -f /etc/kubernetes/admin.conf "${sudo_home}/.kube/config"
+      chown "${SUDO_USER}:${SUDO_USER}" "${sudo_home}/.kube/config"
+      log "INFO" "Kubeconfig written for user: ${SUDO_USER}"
+    fi
+  fi
+}
+
+initialize_control_plane() {
+  log "INFO" "Initializing Kubernetes control-plane with kubeadm"
+
+  if [[ -z "$APISERVER_ADVERTISE_ADDRESS" ]]; then
+    fail "SDS_APISERVER_ADVERTISE_ADDRESS is required for real control-plane installation"
+  fi
+
+  kubeadm init \
+    --apiserver-advertise-address "$APISERVER_ADVERTISE_ADDRESS" \
+    --pod-network-cidr "$KUBEADM_POD_CIDR" \
+    --cri-socket unix:///run/containerd/containerd.sock
+
+  write_kubeconfig_for_root
+
+  log "INFO" "Kubernetes control-plane initialized successfully"
+  log "WARN" "CNI plugin is not installed yet. The node may remain NotReady until CNI is applied."
+}
+
 run_control_plane_flow() {
   log "INFO" "Control-plane flow selected"
   log "INFO" "Detected Kubernetes state before action: ${K8S_NODE_STATE}"
-  log "INFO" "Dry-run mode: no Kubernetes control-plane changes will be made"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "INFO" "Dry-run mode: no Kubernetes control-plane changes will be made"
+    log "INFO" "Dry-run control-plane plan: configure kernel, configure containerd, run kubeadm init"
+    return 0
+  fi
+
+  configure_kernel_for_kubernetes
+  configure_containerd_for_kubernetes
+  initialize_control_plane
 }
 
 run_worker_flow() {
