@@ -27,6 +27,7 @@ jobs:
         run: |
           grep -q "configure_basic_cni" automation-scripts/install.sh
           grep -q "apply_admin_rbac_binding" automation-scripts/install.sh
+          grep -q "repair_kubeadm_post_init_resources" automation-scripts/install.sh
           grep -q "run_kubeadm_join" automation-scripts/install.sh
           grep -q "SDS_KUBEADM_JOIN_COMMAND" automation-scripts/install.sh
           grep -q "SDS_KUBEADM_JOIN_COMMAND" cd/deploy-installer.sh

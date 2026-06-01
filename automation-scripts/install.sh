@@ -537,6 +537,61 @@ write_kubeconfig_for_root() {
   fi
 }
 
+repair_kubeadm_post_init_resources() {
+  log "INFO" "Repairing kubeadm post-init resources"
+
+  local kube_version
+  kube_version="$(kubeadm version -o short)"
+
+  cat > /tmp/sds-kubeadm-config.yaml <<EOF
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+kubernetesVersion: ${kube_version}
+controlPlaneEndpoint: ${APISERVER_ADVERTISE_ADDRESS}:6443
+networking:
+  podSubnet: ${KUBEADM_POD_CIDR}
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+EOF
+
+  kubeadm init phase upload-config all \
+    --config /tmp/sds-kubeadm-config.yaml \
+    --kubeconfig /etc/kubernetes/admin.conf || warn "kubeadm upload-config phase did not complete cleanly"
+
+  kubeadm init phase bootstrap-token \
+    --config /tmp/sds-kubeadm-config.yaml \
+    --kubeconfig /etc/kubernetes/admin.conf || warn "kubeadm bootstrap-token phase did not complete cleanly"
+
+  kubeadm init phase addon kube-proxy \
+    --config /tmp/sds-kubeadm-config.yaml \
+    --kubeconfig /etc/kubernetes/admin.conf || warn "kube-proxy addon phase did not complete cleanly"
+
+  kubeadm init phase addon coredns \
+    --config /tmp/sds-kubeadm-config.yaml \
+    --kubeconfig /etc/kubernetes/admin.conf || warn "coredns addon phase did not complete cleanly"
+
+  kubeadm init phase mark-control-plane \
+    --node-name "$(hostname)" \
+    --kubeconfig /etc/kubernetes/admin.conf || warn "mark-control-plane phase did not complete cleanly"
+
+  KUBECONFIG=/etc/kubernetes/admin.conf kubectl -n kube-system create role sds-kubeadm-bootstrap-config-reader \
+    --verb=get \
+    --resource=configmaps \
+    --resource-name=kubeadm-config \
+    --dry-run=client -o yaml | KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f -
+
+  KUBECONFIG=/etc/kubernetes/admin.conf kubectl -n kube-system create rolebinding sds-kubeadm-bootstrap-config-reader \
+    --role=sds-kubeadm-bootstrap-config-reader \
+    --group=system:bootstrappers:kubeadm:default-node-token \
+    --dry-run=client -o yaml | KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f -
+
+  KUBECONFIG=/etc/kubernetes/admin.conf kubectl -n kube-system get configmap kubeadm-config kubelet-config >/dev/null
+
+  log "INFO" "kubeadm post-init resources are ready"
+}
+
 initialize_control_plane() {
   log "INFO" "Initializing Kubernetes control-plane with kubeadm"
 
@@ -544,15 +599,30 @@ initialize_control_plane() {
     fail "SDS_APISERVER_ADVERTISE_ADDRESS is required for real control-plane installation"
   fi
 
+  set +e
   kubeadm init \
     --apiserver-advertise-address "$APISERVER_ADVERTISE_ADDRESS" \
     --pod-network-cidr "$KUBEADM_POD_CIDR" \
     --cri-socket unix:///run/containerd/containerd.sock
+  local kubeadm_exit=$?
+  set -e
 
+  if [[ "$kubeadm_exit" -ne 0 ]]; then
+    if [[ -f /etc/kubernetes/admin.conf && -f /etc/kubernetes/super-admin.conf && -f /etc/kubernetes/kubelet.conf ]]; then
+      warn "kubeadm init returned non-zero, but Kubernetes bootstrap files exist. Continuing with post-init repair."
+    else
+      fail "kubeadm init failed before creating required Kubernetes bootstrap files"
+    fi
+  fi
+
+  apply_admin_rbac_binding
+  repair_kubeadm_post_init_resources
   write_kubeconfig_for_root
+  configure_basic_cni
+  wait_for_node_ready
+  print_join_command
 
   log "INFO" "Kubernetes control-plane initialized successfully"
-  log "WARN" "CNI plugin is not installed yet. The node may remain NotReady until CNI is applied."
 }
 
 run_control_plane_flow() {
