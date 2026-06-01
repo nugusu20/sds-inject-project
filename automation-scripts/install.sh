@@ -570,10 +570,74 @@ run_control_plane_flow() {
   initialize_control_plane
 }
 
+configure_basic_cni() {
+  log "INFO" "Writing basic CNI bridge configuration"
+
+  mkdir -p /etc/cni/net.d
+
+  cat > /etc/cni/net.d/10-sds-bridge.conflist <<CNI
+{
+  "cniVersion": "0.4.0",
+  "name": "sds-bridge",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "sds-cni0",
+      "isGateway": true,
+      "ipMasq": true,
+      "hairpinMode": true,
+      "ipam": {
+        "type": "host-local",
+        "subnet": "${KUBEADM_POD_CIDR}",
+        "routes": [
+          { "dst": "0.0.0.0/0" }
+        ]
+      }
+    },
+    {
+      "type": "loopback"
+    }
+  ]
+}
+CNI
+
+  systemctl restart kubelet || true
+
+  log "INFO" "Basic CNI configuration completed"
+}
+
+run_kubeadm_join() {
+  [[ -n "${SDS_KUBEADM_JOIN_COMMAND:-}" ]] || fail "SDS_KUBEADM_JOIN_COMMAND is required for real worker installation"
+
+  local join_command="$SDS_KUBEADM_JOIN_COMMAND"
+
+  if [[ "$join_command" != *"--cri-socket"* && "$join_command" != *"--config"* ]]; then
+    join_command="${join_command} --cri-socket unix:///run/containerd/containerd.sock"
+  fi
+
+  log "INFO" "Running kubeadm join for worker node"
+  log "INFO" "Join command received. Token is not printed for safety."
+
+  bash -lc "$join_command"
+
+  log "INFO" "Worker joined the cluster successfully"
+}
+
 run_worker_flow() {
   log "INFO" "Worker flow selected"
   log "INFO" "Detected Kubernetes state before action: ${K8S_NODE_STATE}"
-  log "INFO" "Dry-run mode: no Kubernetes worker changes will be made"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    log "INFO" "Dry-run mode: no Kubernetes worker changes will be made"
+    log "INFO" "Dry-run worker plan: configure kernel, configure containerd, configure CNI, run kubeadm join"
+    log "INFO" "Real worker installation requires SDS_KUBEADM_JOIN_COMMAND"
+    return 0
+  fi
+
+  configure_kernel_for_kubernetes
+  configure_containerd_for_kubernetes
+  configure_basic_cni
+  run_kubeadm_join
 }
 
 run_install() {
