@@ -5,11 +5,11 @@ on:
     inputs:
       target_host:
         description: "Target host or IP"
-        required: false
+        required: true
         type: string
       target_user:
         description: "SSH user"
-        required: false
+        required: true
         type: string
       ssh_port:
         description: "SSH port"
@@ -31,11 +31,11 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      TARGET_HOST: ${{ github.event.inputs.target_host || secrets.CD_TARGET_HOST }}
-      TARGET_USER: ${{ github.event.inputs.target_user || secrets.CD_TARGET_USER }}
-      TARGET_PORT: ${{ github.event.inputs.ssh_port || secrets.CD_SSH_PORT || '22' }}
-      APISERVER_ADVERTISE_ADDRESS: ${{ github.event.inputs.apiserver_advertise_address || secrets.CD_APISERVER_ADVERTISE_ADDRESS }}
-      POD_CIDR: ${{ github.event.inputs.pod_cidr || secrets.CD_POD_CIDR || '10.244.0.0/16' }}
+      TARGET_HOST: ${{ github.event.inputs.target_host }}
+      TARGET_USER: ${{ github.event.inputs.target_user }}
+      TARGET_PORT: ${{ github.event.inputs.ssh_port || '22' }}
+      APISERVER_ADVERTISE_ADDRESS: ${{ github.event.inputs.apiserver_advertise_address }}
+      POD_CIDR: ${{ github.event.inputs.pod_cidr || '10.244.0.0/16' }}
 
     steps:
       - name: Checkout repository
@@ -47,22 +47,18 @@ jobs:
           sudo apt-get install -y makeself
 
       - name: Build installer
-        run: ./build-script
+        run: bash ./build-script
 
       - name: Configure SSH key
         run: |
           test -n "${{ secrets.CD_SSH_PRIVATE_KEY }}"
           mkdir -p ~/.ssh
-          printf '%s
-' "${{ secrets.CD_SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/sds_cd_key
+          printf '%s\n' "${{ secrets.CD_SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/sds_cd_key
           chmod 600 ~/.ssh/sds_cd_key
 
       - name: Deploy installer
         run: |
           set -euo pipefail
-
-          : "${TARGET_HOST:?CD target host is required}"
-          : "${TARGET_USER:?CD target user is required}"
 
           args=(
             --target "${TARGET_USER}@${TARGET_HOST}"
