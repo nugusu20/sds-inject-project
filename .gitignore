@@ -27,3 +27,7 @@ dist/*
 
 # Local debug screenshots
 /docs/screenshots/archive/
+
+# Local release artifacts
+/release/
+/sds-inject-release.zip
