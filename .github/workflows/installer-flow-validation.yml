@@ -1,0 +1,39 @@
+name: Installer Flow Validation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate-installer-flows:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        run: |
+          bash -n automation-scripts/install.sh
+          bash -n cd/deploy-installer.sh
+          bash -n build-script
+          bash -n automation-scripts/collect-packages.sh
+          bash -n automation-scripts/collect-tools.sh
+
+      - name: Validate required installer functions
+        run: |
+          grep -q "configure_basic_cni" automation-scripts/install.sh
+          grep -q "apply_admin_rbac_binding" automation-scripts/install.sh
+          grep -q "run_kubeadm_join" automation-scripts/install.sh
+          grep -q "SDS_KUBEADM_JOIN_COMMAND" automation-scripts/install.sh
+          grep -q "SDS_KUBEADM_JOIN_COMMAND" cd/deploy-installer.sh
+          grep -q "Dry-run control-plane plan" automation-scripts/install.sh
+          grep -q "Dry-run worker plan" automation-scripts/install.sh
+
+      - name: Validate installer dry-run flows
+        run: |
+          SDS_LOG_DIR="$PWD/logs" ./automation-scripts/install.sh --role control-plane --dry-run
+          SDS_LOG_DIR="$PWD/logs" ./automation-scripts/install.sh --role worker --dry-run

@@ -8,6 +8,7 @@ INSTALLER="dist/sds-inject-installer.run"
 DRY_RUN="false"
 APISERVER_ADVERTISE_ADDRESS="${SDS_APISERVER_ADVERTISE_ADDRESS:-}"
 POD_CIDR="${SDS_POD_CIDR:-10.244.0.0/16}"
+KUBEADM_JOIN_COMMAND="${SDS_KUBEADM_JOIN_COMMAND:-}"
 REMOTE_DIR="${SDS_REMOTE_DIR:-/tmp/sds-inject}"
 REMOTE_INSTALLER="${REMOTE_DIR}/sds-inject-installer.run"
 
@@ -23,6 +24,7 @@ Options:
   --installer PATH
   --apiserver-advertise-address IP
   --pod-cidr CIDR
+  --kubeadm-join-command COMMAND
   --dry-run
   -h, --help
 USAGE
@@ -83,6 +85,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --pod-cidr)
       POD_CIDR="${2:-}"
+      shift 2
+      ;;
+    --kubeadm-join-command)
+      KUBEADM_JOIN_COMMAND="${2:-}"
       shift 2
       ;;
     --dry-run)
@@ -172,6 +178,7 @@ case "$REMOTE_STATE" in
     ;;
   worker)
     INSTALL_ROLE="worker"
+    [[ -n "$KUBEADM_JOIN_COMMAND" ]] || fail "Worker deployment requires --kubeadm-join-command or SDS_KUBEADM_JOIN_COMMAND"
     log "INFO" "Worker node detected. CD will reinstall or upgrade worker role only."
     ;;
   control-plane)
@@ -201,7 +208,7 @@ run_ssh "chmod +x $(shell_quote "$REMOTE_INSTALLER")"
 if [[ "$INSTALL_ROLE" == "control-plane" ]]; then
   run_ssh "sudo env SDS_APISERVER_ADVERTISE_ADDRESS=$(shell_quote "$APISERVER_ADVERTISE_ADDRESS") SDS_POD_CIDR=$(shell_quote "$POD_CIDR") $(shell_quote "$REMOTE_INSTALLER") -- --role control-plane"
 else
-  run_ssh "sudo $(shell_quote "$REMOTE_INSTALLER") -- --role worker"
+  run_ssh "sudo env SDS_KUBEADM_JOIN_COMMAND=$(shell_quote "$KUBEADM_JOIN_COMMAND") SDS_POD_CIDR=$(shell_quote "$POD_CIDR") $(shell_quote "$REMOTE_INSTALLER") -- --role worker"
 fi
 
 log "INFO" "CD deployment finished successfully"
