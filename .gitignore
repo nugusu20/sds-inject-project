@@ -24,3 +24,6 @@ Thumbs.db
 # Distribution artifacts
 dist/*
 !dist/.gitkeep
+
+# Local debug screenshots
+/docs/screenshots/archive/
