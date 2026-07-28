@@ -12,7 +12,31 @@ It encapsulates binaries, system packages, configuration files, CNI setups, and 
 
 ---
 
-## ✨ Key Features
+## Architecture & Execution Flow
+
+```mermaid
+graph TD
+    A[build-script] -->|Bundles Binaries, Tools, Configs & Scripts| B(makeself)
+    B -->|Generates Executable| C[sds-inject-installer.run]
+    
+    C --> D{Execute Installer}
+    D -->|--dry-run| E[Log Validation & Safety Check]
+    D -->|--role control-plane| F{Safety Policy Check}
+    D -->|--role worker| G{Safety Policy Check}
+    
+    F -->|Existing Cluster Detected| H[Refuse Execution / Guardrail]
+    F -->|Clean Node| I[Install .deb Packages & containerd]
+    I --> J[Kubeadm Init & RBAC Repair Flow]
+    J --> K[Control-Plane Ready]
+    
+    G -->|Join Token Provided| L[Install .deb Packages & containerd]
+    L --> M[Kubeadm Join]
+    M --> N[Worker Node Joined]
+```
+
+---
+
+## Key Features
 
 - **Air-Gapped Design:** Pre-bundles all required Debian packages (`.deb`) and essential tools (`kubectl`, `helm`, `kustomize`).
 - **Single Executable Output:** Packages the entire installer into a portable `.run` binary using `makeself`.
@@ -23,7 +47,7 @@ It encapsulates binaries, system packages, configuration files, CNI setups, and 
 
 ---
 
-## 📋 Environment & Version Matrix
+## Environment & Version Matrix
 
 To eliminate compatibility drift between `kubeadm`, `kubelet`, and container runtimes, all core component versions are strictly pinned:
 
@@ -40,7 +64,7 @@ To eliminate compatibility drift between `kubeadm`, `kubelet`, and container run
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 ├── automation-scripts/   # Primary installation, recovery, and collection scripts
@@ -52,3 +76,126 @@ To eliminate compatibility drift between `kubeadm`, `kubelet`, and container run
 ├── dist/                 # Generated .run installer artifacts
 ├── docs/screenshots/     # Execution logs and lab validation evidence
 └── .github/workflows/    # CI/CD pipeline automation
+```
+
+---
+
+## How to Build and Run
+
+### 1. Build the Self-Contained Installer
+```bash
+bash ./build-script
+```
+
+### 2. Dry-Run Validation (Non-Destructive)
+Verify the setup and check system pre-requisites:
+```bash
+# Control-plane dry-run
+SDS_LOG_DIR="$PWD/logs" ./dist/sds-inject-installer.run -- --role control-plane --dry-run
+
+# Worker dry-run
+SDS_LOG_DIR="$PWD/logs" ./dist/sds-inject-installer.run -- --role worker --dry-run
+```
+
+### 3. Deploy Control-Plane
+Run the installer on the primary node:
+```bash
+sudo env SDS_APISERVER_ADVERTISE_ADDRESS=192.168.56.120 \
+  SDS_POD_CIDR=10.244.0.0/16 \
+  ./dist/sds-inject-installer.run -- --role control-plane
+```
+
+### 4. Join Worker Nodes
+Generate a join token on the control-plane:
+```bash
+sudo kubeadm token create --print-join-command
+```
+Execute on the worker node:
+```bash
+sudo env SDS_KUBEADM_JOIN_COMMAND="<kubeadm join command>" \
+  SDS_POD_CIDR=10.244.0.0/16 \
+  ./dist/sds-inject-installer.run -- --role worker
+```
+
+### 5. Verify Cluster Uptime
+```bash
+sudo KUBECONFIG=/etc/kubernetes/admin.conf kubectl get nodes -o wide
+```
+
+---
+
+## Safety & Execution Policy
+
+The installer performs state analysis on the target machine prior to applying any configurations:
+
+| Detected Host State | Installer Action / Behavior |
+| :--- | :--- |
+| **No Kubernetes Detected** | Permits clean `--role control-plane` initialization. |
+| **Worker Node Detected** | Allows worker re-join or state upgrade flow. |
+| **Existing Control-Plane** | Refuses automatic reinstall to protect active workloads. |
+| **Unknown/Corrupted State** | Halts execution immediately and prompts for manual review. |
+
+---
+
+## Real-World Incident Recovery Flow
+
+During multi-node lab stress testing, an intentional edge case was validated where `kubeadm init` returned a non-zero exit code due to partial resource allocation. 
+
+The installer's recovery architecture was validated through:
+1. Detection of partial control-plane state via `/etc/kubernetes/super-admin.conf`.
+2. Automated admin RBAC repair and control-plane privilege restoration.
+3. Post-init resource patching ensuring cluster stability prior to worker join.
+
+---
+
+## CI/CD Pipeline
+
+Automated by **GitHub Actions**:
+- **Linting & Syntax:** Validates Shell script formatting via `shellcheck`.
+- **Dry-Run Verification:** Verifies installer bundle extraction and `--dry-run` logic.
+- **Package Manifest Integrity:** Checks presence and sha256 checksums of offline `.deb` packages and helper binaries.
+- **CD Automated Deployment:** Triggers SSH deployment scripts to execute clean node installations or worker re-joins safely.
+
+---
+
+## Lab Validation & Evidence
+
+### Offline Package & Tool Bundling
+![Offline packages](docs/screenshots/offline-packages.png)
+![Offline tools](docs/screenshots/offline-tool.png)
+
+### Installer Build & Artifact Size
+![Build installer](docs/screenshots/build-installer.png)
+![Installer size](docs/screenshots/installer-size.png)
+
+### Dry-Run Validations
+![Control dry-run](docs/screenshots/control-dry-run.png)
+![Worker dry-run](docs/screenshots/worker-dry-run.png)
+![Local CD dry-run](docs/screenshots/local-cd-dry-run.png)
+
+### Two-Node Cluster Operational Proof
+![Installed packages](docs/screenshots/control-installed-packages.png)
+![Final cluster state](docs/screenshots/worker-joined-two-nodes.png)
+
+### Recovery Verification Evidence
+![Init Failure Captured](docs/screenshots/control-plane-real-init-failed.png)
+![Super Admin Check](docs/screenshots/super-admin-check.png)
+![RBAC Fixed](docs/screenshots/admin-rbac-fixed.png)
+
+---
+
+## Known Limitations & Future Roadmap
+
+This project serves as a production-grade infrastructure lab and constraint-based installer demonstration.
+
+- **Image Bundling:** Current version bundles system `.deb` packages; container images are pulled or pre-loaded separately.
+- **CNI:** Implements a lightweight Bridge CNI for lab validation; production deployments are recommended to swap to Cilium or Calico.
+- **High Availability (HA):** Multi-master control-plane setup and external etcd topology are not included in the current release.
+
+---
+
+## References & Docs
+
+- [Kubernetes kubeadm Documentation](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/)
+- [makeself GitHub Repository](https://github.com/megastep/makeself)
+- [containerd System Engine Documentation](https://containerd.io/)
